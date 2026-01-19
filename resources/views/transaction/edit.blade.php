@@ -177,19 +177,112 @@
 
                         <hr>
 
-                        <div class="alert alert-primary">
-                            <h6 class="mb-2"><i class="fas fa-utensils"></i> Informasi FnB</h6>
-                            @if($transaction->transactionFnbs->isEmpty())
-                                <p class="mb-0">Tidak ada FnB dalam transaksi ini</p>
-                            @else
-                                <ul class="mb-0">
-                                    @foreach($transaction->transactionFnbs as $fnbItem)
-                                        <li>{{ $fnbItem->fnb->nama }} - {{ $fnbItem->qty }} x Rp {{ number_format($fnbItem->harga_jual, 0, ',', '.') }}</li>
-                                    @endforeach
-                                </ul>
-                                <p class="mb-0 mt-2"><strong>Total FnB:</strong> Rp {{ number_format($transaction->getFnbTotalAttribute(), 0, ',', '.') }}</p>
-                            @endif
-                            <small class="text-muted d-block mt-2">Untuk mengubah FnB, gunakan fitur "Tambah Pesanan" di halaman transaksi</small>
+                        <div class="card">
+                            <div class="card-header bg-primary text-white">
+                                <h6 class="mb-0"><i class="fas fa-utensils"></i> Kelola FnB Pesanan</h6>
+                            </div>
+                            <div class="card-body">
+                                <!-- FnB Items Table -->
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-bordered" id="fnbTable">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th style="width: 40%">Nama FnB</th>
+                                                <th style="width: 15%">Qty</th>
+                                                <th style="width: 20%">Harga</th>
+                                                <th style="width: 20%">Subtotal</th>
+                                                <th style="width: 5%">Aksi</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="fnbTableBody">
+                                            @if($transaction->transactionFnbs->isEmpty())
+                                                <tr id="emptyRow">
+                                                    <td colspan="5" class="text-center text-muted">Belum ada FnB dalam transaksi ini</td>
+                                                </tr>
+                                            @else
+                                                @foreach($transaction->transactionFnbs as $fnbItem)
+                                                    <tr data-fnb-id="{{ $fnbItem->fnb_id }}" class="fnb-row">
+                                                        <td>{{ $fnbItem->fnb->nama }}</td>
+                                                        <td>
+                                                            <input type="number" 
+                                                                   class="form-control form-control-sm qty-input" 
+                                                                   value="{{ $fnbItem->qty }}" 
+                                                                   min="1"
+                                                                   data-fnb-id="{{ $fnbItem->fnb_id }}"
+                                                                   data-old-qty="{{ $fnbItem->qty }}">
+                                                        </td>
+                                                        <td>
+                                                            <input type="number" 
+                                                                   class="form-control form-control-sm price-input" 
+                                                                   value="{{ $fnbItem->harga_jual }}" 
+                                                                   min="0"
+                                                                   data-fnb-id="{{ $fnbItem->fnb_id }}"
+                                                                   data-old-price="{{ $fnbItem->harga_jual }}">
+                                                        </td>
+                                                        <td class="subtotal-cell">
+                                                            Rp {{ number_format($fnbItem->qty * $fnbItem->harga_jual, 0, ',', '.') }}
+                                                        </td>
+                                                        <td class="text-center">
+                                                            <button type="button" 
+                                                                    class="btn btn-sm btn-danger delete-fnb" 
+                                                                    data-fnb-id="{{ $fnbItem->fnb_id }}"
+                                                                    title="Hapus">
+                                                                <i class="fas fa-trash"></i>
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                @endforeach
+                                            @endif
+                                        </tbody>
+                                        <tfoot>
+                                            <tr class="table-info">
+                                                <th colspan="3" class="text-end">Total FnB:</th>
+                                                <th id="fnbTotalDisplay">Rp {{ number_format($transaction->getFnbTotalAttribute(), 0, ',', '.') }}</th>
+                                                <th></th>
+                                            </tr>
+                                        </tfoot>
+                                    </table>
+                                </div>
+
+                                <!-- Add New FnB Section -->
+                                <div class="card bg-light">
+                                    <div class="card-body">
+                                        <h6 class="mb-3"><i class="fas fa-plus-circle"></i> Tambah FnB Baru</h6>
+                                        <div class="row g-2">
+                                            <div class="col-md-5">
+                                                <select class="form-control form-control-sm" id="newFnbSelect">
+                                                    <option value="">-- Pilih FnB --</option>
+                                                    @foreach($fnbs as $fnb)
+                                                        <option value="{{ $fnb->id }}" 
+                                                                data-harga="{{ $fnb->harga_jual }}"
+                                                                data-stok="{{ $fnb->stok }}">
+                                                            {{ $fnb->nama }} - Rp {{ number_format($fnb->harga_jual, 0, ',', '.') }}
+                                                            @if($fnb->stok == -1)
+                                                                (Stok: Unlimited)
+                                                            @else
+                                                                (Stok: {{ $fnb->stok }})
+                                                            @endif
+                                                        </option>
+                                                    @endforeach
+                                                </select>
+                                            </div>
+                                            <div class="col-md-3">
+                                                <input type="number" 
+                                                       class="form-control form-control-sm" 
+                                                       id="newFnbQty" 
+                                                       placeholder="Qty" 
+                                                       min="1" 
+                                                       value="1">
+                                            </div>
+                                            <div class="col-md-4">
+                                                <button type="button" class="btn btn-sm btn-success" id="addFnbBtn">
+                                                    <i class="fas fa-plus"></i> Tambah FnB
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="form-group mt-4">
@@ -434,6 +527,324 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Update timers every second
     setInterval(updateTimers, 1000);
+
+    // ====== FnB Management Functions ======
+    
+    const transactionId = '{{ $transaction->id_transaksi }}';
+    const csrfToken = '{{ csrf_token() }}';
+
+    // Helper function to format currency
+    function formatCurrency(number) {
+        return 'Rp ' + parseInt(number).toLocaleString('id-ID');
+    }
+
+    // Helper function to show notification
+    function showNotification(message, type = 'success') {
+        const alertClass = type === 'success' ? 'alert-success' : 'alert-danger';
+        const alert = `
+            <div class="alert ${alertClass} alert-dismissible fade show" role="alert">
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        `;
+        
+        // Insert at the top of card-body
+        const cardBody = document.querySelector('.card-body');
+        cardBody.insertAdjacentHTML('afterbegin', alert);
+        
+        // Auto-dismiss after 3 seconds
+        setTimeout(() => {
+            const alertEl = cardBody.querySelector('.alert');
+            if (alertEl) alertEl.remove();
+        }, 3000);
+    }
+
+    // Add New FnB
+    document.getElementById('addFnbBtn').addEventListener('click', function() {
+        const fnbSelect = document.getElementById('newFnbSelect');
+        const fnbId = fnbSelect.value;
+        const qty = parseInt(document.getElementById('newFnbQty').value);
+        
+        if (!fnbId) {
+            alert('Silakan pilih FnB terlebih dahulu');
+            return;
+        }
+        
+        if (!qty || qty < 1) {
+            alert('Quantity harus lebih dari 0');
+            return;
+        }
+        
+        // Check stock
+        const selectedOption = fnbSelect.options[fnbSelect.selectedIndex];
+        const stok = parseInt(selectedOption.getAttribute('data-stok'));
+        
+        if (stok !== -1 && qty > stok) {
+            alert(`Stok tidak mencukupi. Stok tersedia: ${stok}`);
+            return;
+        }
+        
+        // Disable button during request
+        this.disabled = true;
+        this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Menambahkan...';
+        
+        fetch(`/transaction/${transactionId}/fnb/add`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfToken
+            },
+            body: JSON.stringify({
+                fnb_id: fnbId,
+                qty: qty
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showNotification(data.message, 'success');
+                
+                // Check if FnB already exists in table
+                const existingRow = document.querySelector(`tr[data-fnb-id="${fnbId}"]`);
+                
+                if (existingRow) {
+                    // Update existing row
+                    const qtyInput = existingRow.querySelector('.qty-input');
+                    const newQty = parseInt(qtyInput.value) + qty;
+                    qtyInput.value = newQty;
+                    qtyInput.setAttribute('data-old-qty', newQty);
+                    updateSubtotal(existingRow);
+                } else {
+                    // Add new row
+                    const newRow = createFnbRow(data.fnb);
+                    const emptyRow = document.getElementById('emptyRow');
+                    if (emptyRow) emptyRow.remove();
+                    
+                    document.getElementById('fnbTableBody').appendChild(newRow);
+                }
+                
+                // Update total
+                updateFnbTotal(data.total);
+                
+                // Reset form
+                fnbSelect.value = '';
+                document.getElementById('newFnbQty').value = '1';
+            } else {
+                showNotification(data.message, 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showNotification('Terjadi kesalahan saat menambahkan FnB', 'error');
+        })
+        .finally(() => {
+            // Re-enable button
+            this.disabled = false;
+            this.innerHTML = '<i class="fas fa-plus"></i> Tambah FnB';
+        });
+    });
+
+    // Create FnB Row HTML
+    function createFnbRow(fnbData) {
+        const row = document.createElement('tr');
+        row.className = 'fnb-row';
+        row.setAttribute('data-fnb-id', fnbData.fnb_id);
+        
+        const subtotal = fnbData.qty * fnbData.harga_jual;
+        
+        row.innerHTML = `
+            <td>${fnbData.fnb.nama}</td>
+            <td>
+                <input type="number" 
+                       class="form-control form-control-sm qty-input" 
+                       value="${fnbData.qty}" 
+                       min="1"
+                       data-fnb-id="${fnbData.fnb_id}"
+                       data-old-qty="${fnbData.qty}">
+            </td>
+            <td>
+                <input type="number" 
+                       class="form-control form-control-sm price-input" 
+                       value="${fnbData.harga_jual}" 
+                       min="0"
+                       data-fnb-id="${fnbData.fnb_id}"
+                       data-old-price="${fnbData.harga_jual}">
+            </td>
+            <td class="subtotal-cell">${formatCurrency(subtotal)}</td>
+            <td class="text-center">
+                <button type="button" 
+                        class="btn btn-sm btn-danger delete-fnb" 
+                        data-fnb-id="${fnbData.fnb_id}"
+                        title="Hapus">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </td>
+        `;
+        
+        return row;
+    }
+
+    // Update FnB (Quantity or Price Change)
+    function updateFnb(fnbId, qty, hargaJual) {
+        fetch(`/transaction/${transactionId}/fnb/${fnbId}/update`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfToken
+            },
+            body: JSON.stringify({
+                qty: qty,
+                harga_jual: hargaJual
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showNotification(data.message, 'success');
+                
+                // Update the row's data attributes
+                const row = document.querySelector(`tr[data-fnb-id="${fnbId}"]`);
+                const qtyInput = row.querySelector('.qty-input');
+                const priceInput = row.querySelector('.price-input');
+                
+                qtyInput.setAttribute('data-old-qty', qty);
+                priceInput.setAttribute('data-old-price', hargaJual);
+                
+                updateSubtotal(row);
+                updateFnbTotal(data.total);
+            } else {
+                showNotification(data.message, 'error');
+                
+                // Revert to old values
+                const row = document.querySelector(`tr[data-fnb-id="${fnbId}"]`);
+                const qtyInput = row.querySelector('.qty-input');
+                const priceInput = row.querySelector('.price-input');
+                
+                qtyInput.value = qtyInput.getAttribute('data-old-qty');
+                priceInput.value = priceInput.getAttribute('data-old-price');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showNotification('Terjadi kesalahan saat mengupdate FnB', 'error');
+        });
+    }
+
+    // Update subtotal in a row
+    function updateSubtotal(row) {
+        const qty = parseInt(row.querySelector('.qty-input').value);
+        const price = parseInt(row.querySelector('.price-input').value);
+        const subtotal = qty * price;
+        
+        row.querySelector('.subtotal-cell').textContent = formatCurrency(subtotal);
+    }
+
+    // Update FnB total display
+    function updateFnbTotal(total) {
+        document.getElementById('fnbTotalDisplay').textContent = formatCurrency(total);
+    }
+
+    // Delete FnB
+    document.addEventListener('click', function(e) {
+        if (e.target.closest('.delete-fnb')) {
+            const button = e.target.closest('.delete-fnb');
+            const fnbId = button.getAttribute('data-fnb-id');
+            
+            if (!confirm('Apakah Anda yakin ingin menghapus FnB ini?')) {
+                return;
+            }
+            
+            // Disable button during request
+            button.disabled = true;
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            
+            fetch(`/transaction/${transactionId}/fnb/${fnbId}/delete`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification(data.message, 'success');
+                    
+                    // Remove the row
+                    const row = document.querySelector(`tr[data-fnb-id="${fnbId}"]`);
+                    row.remove();
+                    
+                    // Check if table is empty
+                    const remainingRows = document.querySelectorAll('.fnb-row');
+                    if (remainingRows.length === 0) {
+                        const tbody = document.getElementById('fnbTableBody');
+                        tbody.innerHTML = '<tr id="emptyRow"><td colspan="5" class="text-center text-muted">Belum ada FnB dalam transaksi ini</td></tr>';
+                    }
+                    
+                    // Update total
+                    updateFnbTotal(data.total);
+                } else {
+                    showNotification(data.message, 'error');
+                    button.disabled = false;
+                    button.innerHTML = '<i class="fas fa-trash"></i>';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('Terjadi kesalahan saat menghapus FnB', 'error');
+                button.disabled = false;
+                button.innerHTML = '<i class="fas fa-trash"></i>';
+            });
+        }
+    });
+
+    // Handle quantity change
+    document.addEventListener('change', function(e) {
+        if (e.target.classList.contains('qty-input')) {
+            const input = e.target;
+            const fnbId = input.getAttribute('data-fnb-id');
+            const newQty = parseInt(input.value);
+            const oldQty = parseInt(input.getAttribute('data-old-qty'));
+            
+            if (newQty === oldQty) return;
+            
+            if (newQty < 1) {
+                alert('Quantity harus minimal 1');
+                input.value = oldQty;
+                return;
+            }
+            
+            const row = input.closest('tr');
+            const priceInput = row.querySelector('.price-input');
+            const hargaJual = parseInt(priceInput.value);
+            
+            updateFnb(fnbId, newQty, hargaJual);
+        }
+    });
+
+    // Handle price change
+    document.addEventListener('change', function(e) {
+        if (e.target.classList.contains('price-input')) {
+            const input = e.target;
+            const fnbId = input.getAttribute('data-fnb-id');
+            const newPrice = parseInt(input.value);
+            const oldPrice = parseInt(input.getAttribute('data-old-price'));
+            
+            if (newPrice === oldPrice) return;
+            
+            if (newPrice < 0) {
+                alert('Harga tidak boleh negatif');
+                input.value = oldPrice;
+                return;
+            }
+            
+            const row = input.closest('tr');
+            const qtyInput = row.querySelector('.qty-input');
+            const qty = parseInt(qtyInput.value);
+            
+            updateFnb(fnbId, qty, newPrice);
+        }
+    });
 });
 </script>
 

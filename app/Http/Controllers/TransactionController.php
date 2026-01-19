@@ -251,12 +251,22 @@ class TransactionController extends Controller
             // We'll calculate specific duration later based on device, 
             // but for initial end_time estimate we can use the sum
             $jam_main_calc = $customPackage->playstations->sum('pivot.lama_main');
-            $end_time = Carbon::parse($start_time)->addMinutes($jam_main_calc)->format('H:i');
+            // Calculate end time properly (will be stored as H:i but detection happens elsewhere)
+            $start_datetime = Carbon::now();
+            $end_datetime = $start_datetime->copy()->addMinutes($jam_main_calc);
+            $end_time = $end_datetime->format('H:i');
         } elseif ($request->tipe_transaksi === 'prepaid') {
             $jam_main_calc = ($request->jam_main_select && $request->jam_main_select !== 'custom') 
                 ? $request->jam_main_select 
                 : $request->jam_main;
-            $end_time = is_numeric($jam_main_calc) ? Carbon::parse($start_time)->addHours((int)$jam_main_calc)->format('H:i') : null;
+            // Calculate end time properly
+            if (is_numeric($jam_main_calc)) {
+                $start_datetime = Carbon::now();
+                $end_datetime = $start_datetime->copy()->addHours((int)$jam_main_calc);
+                $end_time = $end_datetime->format('H:i');
+            } else {
+                $end_time = null;
+            }
         } else {
             // Postpaid
             $jam_main_calc = null;
@@ -364,8 +374,12 @@ class TransactionController extends Controller
             // Calculate total playtime from package duration for this specific PS type
             $totalJamMain = $packagePlaystation ? $packagePlaystation->pivot->lama_main : $customPackage->playstations->sum('pivot.lama_main');
             
+            // Calculate proper end time with midnight detection
+            $start_datetime = Carbon::parse($tanggal . ' ' . $start_time);
+            $end_datetime = $start_datetime->copy()->addMinutes($totalJamMain);
+            
             $validatedData['jam_main'] = $totalJamMain;
-            $validatedData['waktu_Selesai'] = Carbon::parse($start_time)->addMinutes($totalJamMain)->format('H:i');
+            $validatedData['waktu_Selesai'] = $end_datetime->format('H:i');
 
         } elseif ($request->tipe_transaksi === 'prepaid') {
             // Get device and selected PlayStation
@@ -408,7 +422,11 @@ class TransactionController extends Controller
                 }
             }
 
-            $validatedData['waktu_Selesai'] = $end_time;
+            // Calculate proper end time with midnight detection
+            $start_datetime = Carbon::parse($tanggal . ' ' . $start_time);
+            $end_datetime = $start_datetime->copy()->addHours($jam_main);
+            
+            $validatedData['waktu_Selesai'] = $end_datetime->format('H:i');
             $validatedData['jam_main'] = $jam_main;
             $validatedData['harga'] = $playstation->harga ?? 0; // Store base hourly rate for reference
             $validatedData['total'] = $totalPs + $fnbTotal;
@@ -562,7 +580,7 @@ class TransactionController extends Controller
      */
     public function edit($id)
     {
-        $transaction = Transaction::with(['device.playstation', 'custom_package'])->findOrFail($id);
+        $transaction = Transaction::with(['device.playstation', 'custom_package', 'transactionFnbs.fnb'])->findOrFail($id);
         
         // Only allow editing unpaid transactions
         if ($transaction->payment_status !== 'unpaid') {
@@ -580,12 +598,19 @@ class TransactionController extends Controller
         // Get all custom packages for custom_package type
         $customPackages = CustomPackage::active()->with(['playstations', 'fnbs'])->get();
         
+        // Get all available FnB items (for adding new items)
+        $fnbs = Fnb::where(function($query) {
+            $query->where('stok', '>=', 1)
+                  ->orWhere('stok', -1); // Include unlimited stock items
+        })->get();
+        
         return view('transaction.edit', [
             'title' => 'Edit Transaksi',
             'active' => 'transaction',
             'transaction' => $transaction,
             'devices' => $devices,
-            'customPackages' => $customPackages
+            'customPackages' => $customPackages,
+            'fnbs' => $fnbs
         ]);
     }
 
@@ -1141,6 +1166,295 @@ class TransactionController extends Controller
         
         return redirect()->route('transaction.showPayment', $transaction->id_transaksi)
             ->with('success', $totalAdded . ' item pesanan berhasil ditambahkan');
+    }
+
+    /**
+     * Add a new FnB item to an existing transaction
+     */
+    public function addFnbToTransaction($id, Request $request)
+    {
+        $transaction = Transaction::findOrFail($id);
+        
+        // Only allow editing unpaid transactions
+        if ($transaction->payment_status !== 'unpaid') {
+            return response()->json(['success' => false, 'message' => 'Hanya transaksi yang belum dibayar yang dapat diedit.'], 403);
+        }
+        
+        $request->validate([
+            'fnb_id' => 'required|exists:fnbs,id',
+            'qty' => 'required|integer|min:1',
+        ]);
+        
+        $fnb = Fnb::findOrFail($request->fnb_id);
+        $qty = (int)$request->qty;
+        
+        // Check stock only if not unlimited (stok != -1)
+        if ($fnb->stok != -1 && $fnb->stok < $qty) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Stok ' . $fnb->nama . ' tidak mencukupi. Stok tersedia: ' . $fnb->stok
+            ], 400);
+        }
+        
+        DB::beginTransaction();
+        try {
+            // Check if this FNB is already in the transaction
+            $transactionFnb = TransactionFnb::where('transaction_id', $transaction->id_transaksi)
+                ->where('fnb_id', $fnb->id)
+                ->first();
+            
+            if ($transactionFnb) {
+                // Update existing FNB quantity
+                $transactionFnb->qty += $qty;
+                $transactionFnb->save();
+            } else {
+                // Create new transaction FNB
+                $transactionFnb = TransactionFnb::create([
+                    'transaction_id' => $transaction->id_transaksi,
+                    'fnb_id' => $fnb->id,
+                    'qty' => $qty,
+                    'harga_jual' => $fnb->harga_jual,
+                    'harga_beli' => $fnb->harga_beli
+                ]);
+            }
+            
+            // Update FNB stock only if not unlimited (stok != -1)
+            if ($fnb->stok != -1) {
+                $fnb->decrement('stok', $qty);
+            }
+            
+            // Create stock mutation
+            StockMutation::create([
+                'fnb_id' => $fnb->id,
+                'type' => 'out',
+                'qty' => $qty,
+                'date' => now()->toDateString(),
+                'note' => 'Tambah FnB - Transaksi #' . $transaction->id_transaksi
+            ]);
+            
+            // Recalculate transaction total
+            $this->recalculateTransactionTotal($transaction);
+            
+            DB::commit();
+            
+            // Reload transaction with fresh data
+            $transaction->load('transactionFnbs.fnb');
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'FnB berhasil ditambahkan',
+                'fnb' => $transactionFnb->load('fnb'),
+                'total' => $transaction->fresh()->total
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Add FnB to Transaction Error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal menambahkan FnB: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Update an existing FnB item in a transaction
+     */
+    public function updateTransactionFnb($id, $fnbId, Request $request)
+    {
+        $transaction = Transaction::findOrFail($id);
+        
+        // Only allow editing unpaid transactions
+        if ($transaction->payment_status !== 'unpaid') {
+            return response()->json(['success' => false, 'message' => 'Hanya transaksi yang belum dibayar yang dapat diedit.'], 403);
+        }
+        
+        $request->validate([
+            'qty' => 'required|integer|min:1',
+            'harga_jual' => 'nullable|integer|min:0',
+        ]);
+        
+        $transactionFnb = TransactionFnb::where('transaction_id', $transaction->id_transaksi)
+            ->where('fnb_id', $fnbId)
+            ->firstOrFail();
+        
+        $fnb = $transactionFnb->fnb;
+        $oldQty = $transactionFnb->qty;
+        $newQty = (int)$request->qty;
+        $qtyDifference = $newQty - $oldQty;
+        
+        DB::beginTransaction();
+        try {
+            // If quantity is increasing, check stock
+            if ($qtyDifference > 0) {
+                if ($fnb->stok != -1 && $fnb->stok < $qtyDifference) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Stok ' . $fnb->nama . ' tidak mencukupi. Stok tersedia: ' . $fnb->stok
+                    ], 400);
+                }
+                
+                // Decrease stock
+                if ($fnb->stok != -1) {
+                    $fnb->decrement('stok', $qtyDifference);
+                }
+                
+                // Create stock mutation for increase
+                StockMutation::create([
+                    'fnb_id' => $fnb->id,
+                    'type' => 'out',
+                    'qty' => $qtyDifference,
+                    'date' => now()->toDateString(),
+                    'note' => 'Update FnB qty - Transaksi #' . $transaction->id_transaksi
+                ]);
+            } elseif ($qtyDifference < 0) {
+                // Quantity is decreasing, restore stock
+                if ($fnb->stok != -1) {
+                    $fnb->increment('stok', abs($qtyDifference));
+                }
+                
+                // Create stock mutation for decrease
+                StockMutation::create([
+                    'fnb_id' => $fnb->id,
+                    'type' => 'in',
+                    'qty' => abs($qtyDifference),
+                    'date' => now()->toDateString(),
+                    'note' => 'Update FnB qty - Transaksi #' . $transaction->id_transaksi
+                ]);
+            }
+            
+            // Update transaction FnB
+            $transactionFnb->qty = $newQty;
+            if ($request->has('harga_jual')) {
+                $transactionFnb->harga_jual = $request->harga_jual;
+            }
+            $transactionFnb->save();
+            
+            // Recalculate transaction total
+            $this->recalculateTransactionTotal($transaction);
+            
+            DB::commit();
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'FnB berhasil diupdate',
+                'fnb' => $transactionFnb->fresh()->load('fnb'),
+                'total' => $transaction->fresh()->total
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Update Transaction FnB Error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal mengupdate FnB: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Delete an FnB item from a transaction
+     */
+    public function deleteTransactionFnb($id, $fnbId)
+    {
+        $transaction = Transaction::findOrFail($id);
+        
+        // Only allow editing unpaid transactions
+        if ($transaction->payment_status !== 'unpaid') {
+            return response()->json(['success' => false, 'message' => 'Hanya transaksi yang belum dibayar yang dapat diedit.'], 403);
+        }
+        
+        $transactionFnb = TransactionFnb::where('transaction_id', $transaction->id_transaksi)
+            ->where('fnb_id', $fnbId)
+            ->firstOrFail();
+        
+        $fnb = $transactionFnb->fnb;
+        $qty = $transactionFnb->qty;
+        
+        DB::beginTransaction();
+        try {
+            // Restore stock only if not unlimited (stok != -1)
+            if ($fnb->stok != -1) {
+                $fnb->increment('stok', $qty);
+            }
+            
+            // Create stock mutation
+            StockMutation::create([
+                'fnb_id' => $fnb->id,
+                'type' => 'in',
+                'qty' => $qty,
+                'date' => now()->toDateString(),
+                'note' => 'Hapus FnB - Transaksi #' . $transaction->id_transaksi
+            ]);
+            
+            // Delete transaction FnB
+            $transactionFnb->delete();
+            
+            // Recalculate transaction total
+            $this->recalculateTransactionTotal($transaction);
+            
+            DB::commit();
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'FnB berhasil dihapus',
+                'total' => $transaction->fresh()->total
+            ]);
+            
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Delete Transaction FnB Error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal menghapus FnB: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+    
+    /**
+     * Recalculate transaction total based on PS cost and FnB items
+     */
+    private function recalculateTransactionTotal($transaction)
+    {
+        $fnbTotal = 0;
+        
+        if ($transaction->tipe_transaksi === 'custom_package' && $transaction->custom_package) {
+            // For custom package, calculate only paid extra FnB
+            $transaction->load('custom_package.fnbs');
+            $packageItems = [];
+            foreach ($transaction->custom_package->fnbs as $pFnb) {
+                $packageItems[$pFnb->id] = $pFnb->pivot->quantity;
+            }
+            
+            $currentFnbs = TransactionFnb::where('transaction_id', $transaction->id_transaksi)->get();
+            
+            foreach ($currentFnbs as $fnbItem) {
+                $qtyInPackage = $packageItems[$fnbItem->fnb_id] ?? 0;
+                if ($fnbItem->qty > $qtyInPackage) {
+                    $paidQty = $fnbItem->qty - $qtyInPackage;
+                    $fnbTotal += $paidQty * $fnbItem->harga_jual;
+                }
+            }
+        } else {
+            // For normal transactions, sum all FnB costs
+            $fnbTotal = TransactionFnb::where('transaction_id', $transaction->id_transaksi)
+                ->selectRaw('SUM(qty * harga_jual) as total')
+                ->value('total') ?? 0;
+        }
+        
+        // Calculate PS cost
+        $totalPs = 0;
+        if ($transaction->tipe_transaksi === 'prepaid') {
+            $totalPs = $transaction->harga * ($transaction->jam_main ?? 0);
+        } elseif ($transaction->tipe_transaksi === 'custom_package') {
+            $totalPs = $transaction->harga;
+        } elseif ($transaction->tipe_transaksi === 'postpaid') {
+            // For running lost time, don't calculate until transaction ends
+            $totalPs = 0;
+        }
+        
+        $transaction->total = $totalPs + $fnbTotal;
+        $transaction->save();
     }
 
     /**
